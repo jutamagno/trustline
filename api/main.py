@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
 from fastapi import FastAPI, Request, Response
@@ -14,12 +16,30 @@ setup_logging()
 
 from api.routes import audit, compliance, correspondents, ingest, search  # noqa: E402
 
+logger = logging.getLogger(__name__)
 _request_id: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        from trustline.db.postgres import ensure_schema
+        ensure_schema()
+    except Exception as exc:
+        logger.warning("postgres_startup_failed", extra={"error": str(exc)})
+    try:
+        from trustline.search.elastic import ElasticClient
+        ElasticClient().ensure_indexes()
+    except Exception as exc:
+        logger.warning("elasticsearch_startup_failed", extra={"error": str(exc)})
+    yield
+
 
 app = FastAPI(
     title="Trustline",
     description="Intelligent audit platform for credit origination data — Banco BMG",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -57,6 +77,7 @@ app.include_router(search.router, prefix="/search", tags=["search"])
 @app.get("/health", tags=["ops"])
 def health() -> dict:
     from trustline.db.mongo import get_db
+    from trustline.search.elastic import ElasticClient
 
     components: dict[str, str] = {}
     try:
@@ -64,6 +85,14 @@ def health() -> dict:
         components["mongo"] = "ok"
     except Exception as exc:
         components["mongo"] = f"error: {exc}"
+
+    try:
+        if ElasticClient().ping():
+            components["elasticsearch"] = "ok"
+        else:
+            components["elasticsearch"] = "error: ping failed"
+    except Exception as exc:
+        components["elasticsearch"] = f"error: {exc}"
 
     return {"status": "ok" if all(v == "ok" for v in components.values()) else "degraded",
             "components": components}

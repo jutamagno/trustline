@@ -9,7 +9,10 @@ router = APIRouter()
 
 @router.get("/bcb538")
 def get_bcb538_report() -> dict:
-    report = get_latest_compliance_report("bcb538")
+    try:
+        report = get_latest_compliance_report("bcb538")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
     if not report:
         raise HTTPException(status_code=404, detail="No BCB 538 report generated yet. Run the Airflow DAG.")
     return report
@@ -17,7 +20,10 @@ def get_bcb538_report() -> dict:
 
 @router.get("/lgpd")
 def get_lgpd_report() -> dict:
-    report = get_latest_compliance_report("lgpd")
+    try:
+        report = get_latest_compliance_report("lgpd")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
     if not report:
         raise HTTPException(status_code=404, detail="No LGPD audit generated yet. Run the Airflow DAG.")
     return report
@@ -25,7 +31,10 @@ def get_lgpd_report() -> dict:
 
 @router.get("/eval/latest")
 def get_latest_eval() -> dict:
-    run = get_latest_eval_run()
+    try:
+        run = get_latest_eval_run()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}")
     if not run:
         raise HTTPException(status_code=404, detail="No eval run found.")
     return run

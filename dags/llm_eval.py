@@ -37,7 +37,6 @@ def trustline_llm_eval():
     @task()
     def run_eval_suite(cases_raw: list[dict]) -> dict:
         from datetime import datetime
-        from trustline.llm.client import BedrockClient
         from trustline.llm.evaluator import LLMEvaluator
         from trustline.models import (
             Channel, ConsentMethod, EvalCase, OriginationEvent, ProductType, RiskLevel,

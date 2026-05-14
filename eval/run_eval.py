@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
+
+logging.basicConfig(level=logging.CRITICAL)  # suppress library noise in CI output
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
@@ -30,7 +33,7 @@ def load_cases(path: Path) -> list[EvalCase]:
             channel=Channel(event_data["channel"]),
             product_type=ProductType(event_data["product_type"]),
             customer_cpf_hash=event_data["customer_cpf_hash"],
-            customer_age=event_data["customer_age"],
+            customer_age=age,
             loan_amount=event_data["loan_amount"],
             contract_date=datetime.fromisoformat(event_data["contract_date"]),
             consent_method=ConsentMethod(event_data["consent_method"]),

@@ -4,6 +4,7 @@ End-to-end demo: ingest an event → analyze → show risk score → generate co
 """
 from __future__ import annotations
 
+import logging
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -11,6 +12,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
+
+# Keep logs quiet in demo mode so narrative output is readable
+logging.basicConfig(level=logging.CRITICAL)
 
 from trustline.analyzers.consent_verifier import ConsentVerifier
 from trustline.analyzers.inconsistency import InconsistencyDetector
@@ -36,6 +40,7 @@ def main() -> None:
 
     # 1. Ingest a suspicious event
     _section("1. Evento suspeito: idoso 74 anos, correspondente, áudio, madrugada")
+    now = datetime.now(UTC)
     event = OriginationEvent(
         event_id=str(uuid.uuid4()),
         correspondent_id="CORR-DEMO-001",
@@ -44,24 +49,36 @@ def main() -> None:
         customer_cpf_hash=hash_cpf("12345678900"),
         customer_age=74,
         loan_amount=8500.0,
-        contract_date=datetime(2025, 3, 15, 2, 30, tzinfo=UTC),
+        contract_date=now,
         consent_method=ConsentMethod.AUDIO,
         raw_fields={"prazo_meses": 72, "taxa_juros": 1.8},
-        occurred_at=datetime(2025, 3, 15, 2, 30, tzinfo=UTC),
+        occurred_at=now,
         region="SP",
         declared_income=1500.0,
     )
 
-    store = EventStore()
+    try:
+        import pymongo as _pymongo
+        from trustline.config import get_settings as _cfg
+        _s = _cfg()
+        _probe = _pymongo.MongoClient(_s.mongo_uri, serverSelectionTimeoutMS=2000)
+        _probe[_s.mongo_db].command("ping")
+        del _probe
+        store = EventStore()
+    except Exception:
+        import mongomock
+        store = EventStore(db=mongomock.MongoClient()["trustline"])
+        print("  [Demo sem MongoDB — usando banco em memória]")
     store.append_event(event)
     print(f"Event ingested: {event.event_id}")
     print(f"  Correspondente: {event.correspondent_id}")
     print(f"  Canal: {event.channel.value} | Produto: {event.product_type.value}")
-    print(f"  Horário: {event.occurred_at.strftime('%H:%M')} | Idade: {event.customer_age} anos")
+    print(f"  Horário: {event.occurred_at.strftime('%Y-%m-%d %H:%M')} | Idade: {event.customer_age} anos")
     print(f"  Consentimento: {event.consent_method.value}")
 
     # 2. Run analyzers
     _section("2. Análise LLM")
+    llm = None
     try:
         llm = BedrockClient()
         detector = InconsistencyDetector(llm)

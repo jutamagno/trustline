@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -7,6 +8,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from api.deps import get_event_store
+
+logger = logging.getLogger(__name__)
 from trustline.analyzers.inconsistency import InconsistencyDetector
 from trustline.analyzers.consent_verifier import ConsentVerifier
 from trustline.db.mongo import EventStore
@@ -101,8 +104,17 @@ def _analyze_and_persist(
     )
     try:
         insert_audit_entry(audit)
-    except Exception:
-        pass  # audit trail write failure is non-blocking
+    except Exception as exc:
+        logger.warning("audit_trail_write_failed",
+                       extra={"error": str(exc), "event_id": event.event_id})
+
+    try:
+        from trustline.kafka.producer import publish_origination, publish_analysis
+        publish_origination(event)
+        publish_analysis(result)
+    except Exception as exc:
+        logger.warning("kafka_publish_failed",
+                       extra={"error": str(exc), "event_id": event.event_id})
 
 
 @router.post("", status_code=202)
