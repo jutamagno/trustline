@@ -1,0 +1,25 @@
+replicaCount: 2
+
+image:
+  repository: trustline-api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+env:
+  MONGO_URI: "mongodb://mongo:27017"
+  POSTGRES_URL: "postgresql://trustline:trustline@postgres:5432/trustline"
+  KAFKA_BROKERS: "kafka:9092"
+  ES_URL: "http://elasticsearch:9200"
+  USE_LOCALSTACK: "false"
+  AWS_DEFAULT_REGION: "us-east-1"
+  BEDROCK_MODEL_ID: "anthropic.claude-haiku-20240307-v1:0"

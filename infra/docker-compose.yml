@@ -1,0 +1,254 @@
+version: "3.9"
+
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres-airflow:5432/airflow
+  AIRFLOW__CORE__FERNET_KEY: "trustline-fernet-key-change-in-prod-32chars"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__WEBSERVER__SECRET_KEY: "trustline-secret-key"
+  MONGO_URI: mongodb://mongo:27017
+  POSTGRES_URL: postgresql://trustline:trustline@postgres:5432/trustline
+  KAFKA_BROKERS: kafka:9092
+  ES_URL: http://elasticsearch:9200
+  LOCALSTACK_ENDPOINT: http://localstack:4566
+  USE_LOCALSTACK: "true"
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_DEFAULT_REGION: us-east-1
+
+services:
+  # ── Application ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "8000:8000"
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      POSTGRES_URL: postgresql://trustline:trustline@postgres:5432/trustline
+      KAFKA_BROKERS: kafka:9092
+      ES_URL: http://elasticsearch:9200
+      LOCALSTACK_ENDPOINT: http://localstack:4566
+      USE_LOCALSTACK: "true"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    depends_on:
+      mongo:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Storage ──────────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: trustline
+      POSTGRES_PASSWORD: trustline
+      POSTGRES_DB: trustline
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trustline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-airflow:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - pg-airflow-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Streaming ────────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    volumes:
+      - zk-data:/var/lib/zookeeper
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on: [zookeeper]
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── Search ───────────────────────────────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    profiles: [full]
+
+  # ── AWS Mock (LocalStack) ─────────────────────────────────────────────────────
+  localstack:
+    image: localstack/localstack:3.4
+    ports:
+      - "4566:4566"
+    environment:
+      SERVICES: s3,bedrock
+      DEBUG: "0"
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ls-data:/var/lib/localstack
+      - ./localstack/init.sh:/etc/localstack/init/ready.d/init.sh
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4566/_localstack/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # ── Airflow ──────────────────────────────────────────────────────────────────
+  airflow-init:
+    image: apache/airflow:2.9.1
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow users create
+          --username admin --password admin
+          --firstname Admin --lastname User
+          --role Admin --email admin@trustline.local
+      "
+    environment:
+      <<: *airflow-env
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    volumes:
+      - ../dags:/opt/airflow/dags
+      - ../trustline:/opt/airflow/trustline
+      - ../eval:/opt/airflow/eval
+      - airflow-logs:/opt/airflow/logs
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1
+    command: webserver
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *airflow-env
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    volumes:
+      - ../dags:/opt/airflow/dags
+      - ../trustline:/opt/airflow/trustline
+      - ../eval:/opt/airflow/eval
+      - airflow-logs:/opt/airflow/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1
+    command: scheduler
+    environment:
+      <<: *airflow-env
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+    volumes:
+      - ../dags:/opt/airflow/dags
+      - ../trustline:/opt/airflow/trustline
+      - ../eval:/opt/airflow/eval
+      - airflow-logs:/opt/airflow/logs
+
+  # ── Observability ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prom-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+
+volumes:
+  mongo-data:
+  pg-data:
+  pg-airflow-data:
+  zk-data:
+  kafka-data:
+  es-data:
+  ls-data:
+  airflow-logs:
+  prom-data:
+  grafana-data:
